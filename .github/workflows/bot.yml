@@ -1,1 +1,67 @@
+name: Polymarket Paper Trading Bot
 
+on:
+  # Arranca automáticamente al hacer push a main
+  push:
+    branches: [main]
+
+  # Permite arrancarlo manualmente desde GitHub → Actions → Run workflow
+  workflow_dispatch:
+
+  # Programado: arranca cada día a las 13:25 UTC (5min antes de apertura ET)
+  # y reinicia el proceso. GitHub Actions tiene límite de 6h por job,
+  # por eso se programa para reiniciarse durante los gaps del mercado.
+  schedule:
+    - cron: "25 13 * * *"   # 13:25 UTC = 9:25 AM ET (antes de apertura)
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360    # 6 horas máximo por job de GitHub Actions
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Crear carpeta de logs
+        run: mkdir -p logs
+
+      # Restaurar logs de runs anteriores (para acumular historial)
+      - name: Restaurar logs anteriores
+        uses: actions/cache@v4
+        with:
+          path: logs/
+          key: paper-trades-logs-${{ github.run_number }}
+          restore-keys: |
+            paper-trades-logs-
+
+      - name: Correr bot
+        run: |
+          cd src
+          # Timeout de 330 minutos (5.5h) para no exceder el límite de Actions
+          timeout 330m python3 bot.py || true
+
+      # Guardar los logs como artifacts descargables desde GitHub
+      - name: Subir logs como artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paper-trades-${{ github.run_number }}
+          path: logs/
+          retention-days: 30
+
+      # También guardar en cache para el próximo run
+      - name: Guardar logs en cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: logs/
+          key: paper-trades-logs-${{ github.run_number }}
