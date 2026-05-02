@@ -20,8 +20,7 @@ from logger import setup_logging, save_trade, print_summary
 
 log = logging.getLogger(__name__)
 
-# Movimiento mínimo antes de considerar una señal válida
-MIN_PARTIAL_RET_PCT = 0.05   # 0.05% mínimo de movimiento desde apertura
+MIN_PARTIAL_RET_PCT = 0.05  # Movimiento mínimo para considerar señal válida
 
 
 async def monitor_loop(state: BotState):
@@ -60,15 +59,17 @@ async def monitor_loop(state: BotState):
                         )
                         state.monitored += 1
                 else:
-                    # Conservar precio de apertura y preservar ventana
+                    # Conservar precio de apertura ya registrado
                     w.price_open = state.windows[key].price_open
 
-            # CORRECCIÓN BUG 1: hacer merge, no reemplazar
-            # Mantener ventanas con trades pendientes aunque no aparezcan en el fetch
+            # MERGE CORRECTO:
+            # 1. Empezar con las ventanas activas nuevas
+            # 2. Añadir SIEMPRE todas las ventanas con trades pendientes
+            #    (aunque ya no aparezcan en el fetch — necesitamos liquidarlas)
             merged = dict(new_windows)
-            for key, w in state.windows.items():
-                if key in state.pending and key not in merged:
-                    merged[key] = w  # conservar para liquidación
+            for key, (trade, window) in state.pending.items():
+                if key not in merged:
+                    merged[key] = window  # conservar para liquidación
 
             state.windows = merged
             last_poll = now_ts
@@ -87,7 +88,7 @@ async def monitor_loop(state: BotState):
                         settle_trade(state, trade, pw, spot)
                         save_trade(trade)
                     else:
-                        log.warning(f"[LIQUIDACIÓN] Sin precio para {key}, trade descartado")
+                        log.warning(f"[RESULT] Sin precio para {pw.asset}, trade descartado")
                 state.windows.pop(key, None)
                 state.done_keys.discard(key)
                 continue
@@ -98,12 +99,12 @@ async def monitor_loop(state: BotState):
             partial_ret     = (spot - w.price_open) / w.price_open * 100
             abs_partial_ret = abs(partial_ret)
 
-            # CORRECCIÓN BUG 2: ignorar señales sin movimiento mínimo
+            # Ignorar señales sin movimiento mínimo
             if abs_partial_ret < MIN_PARTIAL_RET_PCT:
                 if int(secs_elapsed) % 60 < 5 and secs_left > 30:
                     log.info(
                         f"  [{w.asset} {w.tf}] ${spot:,.2f} | "
-                        f"ret={partial_ret:+.3f}% | esperando mov. mínimo ({MIN_PARTIAL_RET_PCT}%) | "
+                        f"ret={partial_ret:+.3f}% | esperando mov. ({MIN_PARTIAL_RET_PCT}%) | "
                         f"{int(secs_left)}s"
                     )
                 continue
