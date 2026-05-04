@@ -1,10 +1,11 @@
 """
 polymarket.py — Cliente de la API de Polymarket
-Detecta ventanas activas buscando por ID en el rango correcto.
+Detecta ventanas activas con autodescubrimiento de ID y manejo de gaps nocturnos.
 """
 
 import json
 import logging
+import time
 import urllib.request
 from datetime import datetime, timezone
 
@@ -14,8 +15,13 @@ from models import Window
 log = logging.getLogger(__name__)
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# Estado interno: último ID conocido con actividad
-_last_known_id = {"val": 2134000}
+# ID base autodescubierto en runtime (se actualiza continuamente)
+_state = {"last_known_id": None, "last_discovery": 0.0}
+
+LISTING_URL = (
+    "https://gamma-api.polymarket.com/markets"
+    "?limit=300&order=id&ascending=false"
+)
 
 
 def _fetch_market(id_val: int) -> dict | None:
@@ -30,8 +36,31 @@ def _fetch_market(id_val: int) -> dict | None:
         return None
 
 
+def _discover_base_id() -> int:
+    """
+    Descubre el ID más alto actual de mercados Up/Down vía el listing general.
+    Usa esto como punto de partida para el scan de ventanas activas.
+    """
+    try:
+        req = urllib.request.Request(LISTING_URL, headers=HEADERS)
+        with urllib.request.urlopen(req, timeout=8) as r:
+            markets = json.loads(r.read())
+        updown_ids = [
+            int(m.get("id", 0))
+            for m in markets
+            if "Up or Down" in m.get("question", "")
+        ]
+        if updown_ids:
+            max_id = max(updown_ids)
+            log.info(f"[API] ID base descubierto: {max_id}")
+            return max_id
+    except Exception as e:
+        log.warning(f"[API] Error en autodescubrimiento: {e}")
+    return 2155000  # fallback conservador
+
+
 def _parse_window(m: dict, now_ts: float) -> Window | None:
-    """Convierte un market dict en Window si es válido y está activo/próximo."""
+    """Convierte un market dict en Window si está activo o próximo."""
     q = m.get("question", "")
     if "Up or Down" not in q or m.get("closed"):
         return None
@@ -57,7 +86,6 @@ def _parse_window(m: dict, now_ts: float) -> Window | None:
     secs_left = ts_end - now_ts
     secs_elapsed = now_ts - ts_start
 
-    # Solo ventanas en curso o que empiezan en los próximos 2 minutos
     if secs_left < 0 or secs_elapsed < -120:
         return None
 
@@ -86,50 +114,91 @@ def _parse_window(m: dict, now_ts: float) -> Window | None:
     )
 
 
+def is_market_hours() -> bool:
+    """
+    Estima si Polymarket tiene ventanas activas ahora.
+    Basado en datos empíricos: opera ~9:30 AM – 4:00 PM ET (13:30–20:00 UTC)
+    de lunes a viernes. Fuera de ese horario el bot espera sin hacer scans.
+    """
+    now = datetime.now(timezone.utc)
+    # Fin de semana completo: no hay mercado
+    if now.weekday() >= 5:
+        return False
+    # Horario UTC: 13:30 – 20:30 (margen de 30min extra por si acaso)
+    now_min = now.hour * 60 + now.minute
+    return 13 * 60 + 25 <= now_min <= 20 * 60 + 30
+
+
+def mins_to_market_open() -> float:
+    """Minutos hasta la próxima apertura estimada del mercado."""
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    # Próxima apertura: 13:30 UTC del siguiente día hábil
+    candidate = now.replace(hour=13, minute=30, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    while candidate.weekday() >= 5:
+        candidate += timedelta(days=1)
+    return (candidate - now).total_seconds() / 60
+
+
 def fetch_active_windows() -> dict[str, Window]:
     """
-    Detecta ventanas Up/Down activas en Polymarket.
-
-    Estrategia: busca por ID en el rango donde están los mercados de hoy.
-    El endpoint de listing general (/markets?limit=300) solo devuelve
-    mercados futuros precargados, no los activos del momento.
+    Detecta ventanas Up/Down activas.
+    - Fuera de horario: retorna vacío sin hacer requests innecesarios.
+    - En horario: autodescubre el ID base y hace scan en el rango correcto.
     """
-    now_ts  = datetime.now(timezone.utc).timestamp()
+    now_ts = datetime.now(timezone.utc).timestamp()
+
+    # Fuera de horario: no gastar requests de API
+    if not is_market_hours():
+        return {}
+
+    # Autodescubrir ID base cada 10 minutos o al arrancar
+    if (
+        _state["last_known_id"] is None
+        or now_ts - _state["last_discovery"] > 600
+    ):
+        _state["last_known_id"] = _discover_base_id()
+        _state["last_discovery"] = now_ts
+
+    base    = _state["last_known_id"]
     windows = {}
 
-    # ── Paso 1: scan rápido hacia adelante desde último ID conocido ──
-    # Los mercados se crean ~1min antes de cada ventana, por lo que
-    # los IDs activos están siempre cerca del último conocido
-    base = _last_known_id["val"]
-    scan_range = range(max(base - 200, 2080000), base + 500, 3)
-
-    for id_val in scan_range:
+    # ── Scan normal: ±300 IDs desde el último conocido ───────────────
+    for id_val in range(max(base - 300, 2080000), base + 100, 3):
         m = _fetch_market(id_val)
         if not m:
             continue
+        # Actualizar ID base si encontramos algo más reciente
+        if "Up or Down" in m.get("question", ""):
+            mid = int(m.get("id", 0))
+            if mid > _state["last_known_id"]:
+                _state["last_known_id"] = mid
         w = _parse_window(m, now_ts)
         if w:
             windows[w.key] = w
-            # Actualizar el último ID conocido con actividad
-            if id_val > _last_known_id["val"]:
-                _last_known_id["val"] = id_val
+        time.sleep(0.02)
 
-    # ── Paso 2: si no encontramos nada, hacer scan más amplio ────────
+    # ── Si no encontramos nada, scan amplio hacia adelante ───────────
     if not windows:
         log.info("[API] Scan amplio buscando ventanas activas...")
-        for id_val in range(base + 500, base + 2000, 5):
+        for id_val in range(base + 100, base + 3000, 5):
             m = _fetch_market(id_val)
             if not m:
                 continue
-            q = m.get("question", "")
-            if "Up or Down" in q:
-                if id_val > _last_known_id["val"]:
-                    _last_known_id["val"] = id_val
+            if "Up or Down" in m.get("question", ""):
+                mid = int(m.get("id", 0))
+                if mid > _state["last_known_id"]:
+                    _state["last_known_id"] = mid
             w = _parse_window(m, now_ts)
             if w:
                 windows[w.key] = w
+            time.sleep(0.02)
+            if len(windows) >= 3:
+                break
 
     if windows:
         log.info(f"[API] {len(windows)} ventana(s) activa(s) detectadas")
-    
+
     return windows

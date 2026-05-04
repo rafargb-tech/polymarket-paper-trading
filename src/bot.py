@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import CONFIG
 from models import BotState
 from feed import price_feed
-from polymarket import fetch_active_windows
+from polymarket import fetch_active_windows, is_market_hours, mins_to_market_open
 from strategy import evaluate_signal, open_trade, settle_trade
 from logger import setup_logging, save_trade, print_summary
 
@@ -39,6 +39,19 @@ async def monitor_loop(state: BotState):
 
     while True:
         now_ts = time.time()
+
+        # ── Fuera de horario: esperar sin consumir API ──────────────────
+        if not is_market_hours():
+            if now_ts - last_status_ts > 300:
+                mins = mins_to_market_open()
+                px = " | ".join(
+                    f"{a}=${state.prices[a]:,.2f}"
+                    for a in CONFIG["assets"] if a in state.prices
+                )
+                log.info(f"[ESPERA] Mercado cerrado. Abre en {mins:.0f}min (~{mins/60:.1f}h) | {px}")
+                last_status_ts = now_ts
+            await asyncio.sleep(60)
+            continue
 
         # ── Actualizar ventanas de Polymarket ────────────────────────
         if now_ts - last_poll > CONFIG["polymarket_poll_secs"]:
