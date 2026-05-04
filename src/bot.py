@@ -48,7 +48,8 @@ async def monitor_loop(state: BotState):
             for key, w in new_windows.items():
                 if key not in state.windows:
                     spot = state.prices.get(w.asset)
-                    if spot:
+                    secs_elapsed_now = datetime.now(timezone.utc).timestamp() - w.ts_start
+                if spot and secs_elapsed_now >= 0:
                         w.price_open = spot
                         end_str = datetime.fromtimestamp(
                             w.ts_end, tz=timezone.utc

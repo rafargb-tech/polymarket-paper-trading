@@ -15,6 +15,12 @@ def evaluate_signal(
     window: Window,
     spot: float,
 ) -> tuple[Optional[str], float, float]:
+    # No operar si las odds son extremas: el mercado ya incorporó información
+    # que nosotros no tenemos (oracle ya actualizó, o ventana casi resuelta)
+    ODDS_MIN = 0.10   # No entrar si odds < 10% (mercado casi seguro de Down)
+    ODDS_MAX = 0.90   # No entrar si odds > 90% (mercado casi seguro de Up)
+    if window.odds_up < ODDS_MIN or window.odds_up > ODDS_MAX:
+        return None, 0.0, 0.5
     """
     Compara la probabilidad empírica de Up contra las odds actuales de Polymarket.
 
