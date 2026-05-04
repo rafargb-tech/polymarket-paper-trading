@@ -61,7 +61,8 @@ async def monitor_loop(state: BotState):
                         state.monitored += 1
                 else:
                     # Conservar precio de apertura ya registrado
-                    w.price_open = state.windows[key].price_open
+                    existing = state.windows.get(key)
+                    w.price_open = existing.price_open if existing else None
 
             # MERGE CORRECTO:
             # 1. Empezar con las ventanas activas nuevas
