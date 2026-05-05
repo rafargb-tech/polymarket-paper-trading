@@ -22,8 +22,8 @@ CONFIG = {
     "polymarket_poll_secs": 20,    # Frecuencia de actualización de odds
 
     # ── Archivos de salida ───────────────────────────────────────
-    "log_trades":  "logs/paper_trades.csv",
-    "log_monitor": "logs/monitor.log",
+    "log_trades":  "../logs/paper_trades.csv",
+    "log_monitor": "../logs/monitor.log",
 }
 
 # Mapeo de assets: nombre interno → nombre en Polymarket y símbolo en Bybit

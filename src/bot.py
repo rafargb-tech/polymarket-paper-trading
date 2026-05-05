@@ -47,9 +47,10 @@ async def monitor_loop(state: BotState):
             # Registrar precio de apertura para ventanas nuevas
             for key, w in new_windows.items():
                 if key not in state.windows:
+                    # Ventana nueva: registrar precio de apertura
                     spot = state.prices.get(w.asset)
                     secs_elapsed_now = datetime.now(timezone.utc).timestamp() - w.ts_start
-                if spot and secs_elapsed_now >= 0:
+                    if spot and secs_elapsed_now >= 0:
                         w.price_open = spot
                         end_str = datetime.fromtimestamp(
                             w.ts_end, tz=timezone.utc
@@ -64,16 +65,15 @@ async def monitor_loop(state: BotState):
                     existing = state.windows.get(key)
                     w.price_open = existing.price_open if existing else None
 
-            # MERGE CORRECTO:
-            # 1. Empezar con las ventanas activas nuevas
-            # 2. Añadir SIEMPRE todas las ventanas con trades pendientes
-            #    (aunque ya no aparezcan en el fetch — necesitamos liquidarlas)
+            # MERGE: ventanas activas nuevas + pendientes de liquidar
+            # Las ventanas sin trades pendientes que ya no son activas se descartan
             merged = dict(new_windows)
             for key, (trade, window) in state.pending.items():
                 if key not in merged:
-                    merged[key] = window  # conservar para liquidación
+                    merged[key] = window  # conservar solo para liquidación
 
             state.windows = merged
+            state.done_keys = {k for k in state.done_keys if k in merged}
             last_poll = now_ts
 
         # ── Evaluar cada ventana ─────────────────────────────────────

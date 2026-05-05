@@ -12,7 +12,7 @@ from models import Trade
 
 
 def setup_logging():
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs(os.path.dirname(CONFIG["log_monitor"]), exist_ok=True)
     fmt = "%(asctime)s %(message)s"
     logging.basicConfig(
         level=logging.INFO,
@@ -27,7 +27,7 @@ def setup_logging():
 
 def save_trade(trade: Trade):
     """Agrega una operación al CSV de paper trades."""
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs(os.path.dirname(CONFIG["log_trades"]), exist_ok=True)
     path       = CONFIG["log_trades"]
     file_exists = os.path.exists(path)
     row        = trade.to_dict()
